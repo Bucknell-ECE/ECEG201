@@ -18,7 +18,7 @@ Requires an I2C bus instance to be passed during initialization
 
 import board
 import time
-from digitalio import DigitalInOut, Direction, Pull
+from digitalio import DigitalInOut, Direction
 from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
 
