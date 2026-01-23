@@ -1,28 +1,24 @@
-'''
+"""
 Author: Matt Lamparter
 Updated 2024.12.13
+Refactored by Aiden Cherniske 2026.01.23
 
-A basic set of functions to connect to WiFi using an ESP32-S3 Feather
-This is based on the guide from Adafruit:
+WiFi connectivity and API request management for ESP32-S3 Feather.
+
+Based on Adafruit guide:
 https://learn.adafruit.com/adafruit-esp32-s3-feather/circuitpython-internet-test
 
-You'll need to edit the settings.toml file on the root of your CIRCUITPY drive
-update the variables CIRCUITPY_WIFI_SSID and CIRCUITPY_WIFI_PASSWORD
+Setup:
+- Edit settings.toml on CIRCUITPY drive
+- Set CIRCUITPY_WIFI_SSID and CIRCUITPY_WIFI_PASSWORD
 
-Updated 2025.04.30
-The api_get() function now supports passing the "headers" parameter to adafruit_requests.Session().get()
-The headers parameter is optional and may be left out, as we traditionally did for API requests such as those
-used for timeapi.io:  api_get('https://www.timeapi.io/api/time/current/ip?ipAddress=237.71.232.203')
+Features:
+- WiFi connection management
+- HTTP/HTTPS requests with optional headers
+- NTP time synchronization (UTC)
+- ThingSpeak API support with validation
+"""
 
-Alternatively, if an API request requires passing a header with an API key, that functionality is now supported.
-Such an example would be:
-api_get('https://api.api-ninjas.com/v1/exercises?type=cardio', headersInput={'X-Api-Key': 'your_API_key_here'})
-
-Updated 2025.11.07
-Tired of failing free API time sources, this library was switched to use the adafruit_ntp library
-This library relies on an Adafruit-hosted NTP server.  This server returns UTC time so the end
-users is required to update the time for their local timezone.
-'''
 import os
 import ipaddress
 import ssl
@@ -32,76 +28,182 @@ import adafruit_requests
 import adafruit_ntp
 
 
+class WiFiObject:
+    """
+    Manages WiFi connectivity and network operations for ESP32-S3.
+    
+    Automatically connects to WiFi on initialization and provides
+    access to HTTP requests and NTP time synchronization.
+    """
+    
+    # Constants
+    GOOGLE_DNS = "8.8.8.8"
+    THINGSPEAK_UPDATE_URL = "api.thingspeak.com/update"
+    THINGSPEAK_MIN_INTERVAL = 15  # Seconds between free tier writes
+    
+    def __init__(self, verbose=False):
+        """
+        Initialize WiFi connection and network services.
+        
+        Args:
+            verbose: If True, print available WiFi networks during scan
+        """
+        self._verbose = verbose
+        self._mac = [hex(i) for i in wifi.radio.mac_address]
+        self._ipv4 = wifi.radio.ipv4_address
+        
+        # Network setup
+        self._pool = socketpool.SocketPool(wifi.radio)
+        self._requests = adafruit_requests.Session(
+            self._pool, 
+            ssl.create_default_context()
+        )
+        self._ntp = adafruit_ntp.NTP(
+            self._pool, 
+            tz_offset=0, 
+            cache_seconds=3600
+        )
+        
+        self._connect_to_wifi()
+        self._test_connectivity()
 
-class wifiObject():
-
-
-    def __init__(self, verbose=0):
-        #self.__debug = debug
-        self.__verbose = verbose
-        self.__MAC = [hex(i) for i in wifi.radio.mac_address]
-        self.__IPv4 = wifi.radio.ipv4_address
-        self.__pool = socketpool.SocketPool(wifi.radio)
-        self.__requests = adafruit_requests.Session(self.__pool, ssl.create_default_context())
-        self.__ntp = adafruit_ntp.NTP(self.__pool, tz_offset=0, cache_seconds=3600)
-
+    def _connect_to_wifi(self):
+        """Establish WiFi connection using credentials from settings.toml."""
         print("ESP32-S3 WebClient Test")
-        print(f"My MAC address: {[hex(i) for i in wifi.radio.mac_address]}")
-        if(verbose == 1):
-            print("Available WiFi networks:")
-            for network in wifi.radio.start_scanning_networks():
-                print("\t%s\t\tRSSI: %d\tChannel: %d" % (str(network.ssid, "utf-8"),
-                                                 network.rssi, network.channel))
-            wifi.radio.stop_scanning_networks()
+        print(f"MAC address: {self._mac}")
+        
+        if self._verbose:
+            self._scan_networks()
+        
+        ssid = os.getenv("CIRCUITPY_WIFI_SSID")
+        password = os.getenv("CIRCUITPY_WIFI_PASSWORD")
+        
+        print(f"Connecting to {ssid}...")
+        wifi.radio.connect(ssid, password)
+        print(f"Connected to {ssid}")
+        print(f"IP address: {wifi.radio.ipv4_address}")
 
-        print(f"Connecting to {os.getenv('CIRCUITPY_WIFI_SSID')}")
-        wifi.radio.connect(os.getenv("CIRCUITPY_WIFI_SSID"), os.getenv("CIRCUITPY_WIFI_PASSWORD"))
-        print(f"Connected to {os.getenv('CIRCUITPY_WIFI_SSID')}")
-        print(f"My IP address: {wifi.radio.ipv4_address}")
+    def _scan_networks(self):
+        """Scan and display available WiFi networks."""
+        print("Available WiFi networks:")
+        for network in wifi.radio.start_scanning_networks():
+            print(f"\t{network.ssid}\t\tRSSI: {network.rssi}\tChannel: {network.channel}")
+        wifi.radio.stop_scanning_networks()
 
-        ping_ip = ipaddress.IPv4Address("8.8.8.8")
+    def _test_connectivity(self):
+        """Test internet connectivity by pinging Google DNS."""
+        ping_ip = ipaddress.IPv4Address(self.GOOGLE_DNS)
         ping = wifi.radio.ping(ip=ping_ip)
-        # retry once if timed out
+        
+        # Retry once if timeout
         if ping is None:
             ping = wifi.radio.ping(ip=ping_ip)
+        
         if ping is None:
-            print("Couldn't ping 'google.com' successfully")
+            print(f"Warning: Could not ping {self.GOOGLE_DNS}")
         else:
-            # convert s to ms
-            print(f"Pinging 'google.com' took: {ping * 1000} ms")
+            print(f"Ping to {self.GOOGLE_DNS}: {ping * 1000:.2f} ms")
 
-    def getPool(self):
-        return self.__pool
+    def get_pool(self):
+        """
+        Get the socket pool for network operations.
+        
+        Returns:
+            SocketPool: Network socket pool instance
+        """
+        return self._pool
 
-    def getNTP(self):
-        return self.__ntp
+    def get_ntp(self):
+        """
+        Get the NTP client for time synchronization.
+        
+        Returns:
+            NTP: Adafruit NTP client instance
+        """
+        return self._ntp
+    def get_requests(self):
+        """
+        Get the requests session for HTTP operations.
+        
+        Returns:
+            Session: Adafruit requests session instance
+        """
+        return self._requests
 
-    def getRequests(self):
-        return self.__requests
-    
-    def getUTC(self):
-        ntp = self.getNTP()
-        return ntp.datetime
+    def get_utc(self):
+        """
+        Get current UTC time from NTP server.
+        
+        Returns:
+            time.struct_time: Current UTC time
+        """
+        return self._ntp.datetime
 
-    def getMAC(self):
-        return self.__MAC
+    def get_mac(self):
+        """
+        Get device MAC address.
+        
+        Returns:
+            list: MAC address bytes as hex strings
+        """
+        return self._mac
 
-    def getIP(self):
-        return self.__IPv4
+    def get_ip(self):
+        """
+        Get device IPv4 address.
+        
+        Returns:
+            IPv4Address: Current IP address
+        """
+        return self._ipv4
 
-    def api_get(self, URL, headersInput=None):
-        # Some API providers require the use of the 'headers' argument for storing an API key
-        # this argument is optional
-        if headersInput == None:
-            response = self.__requests.get(URL)
-        if headersInput != None:
-            response = self.__requests.get(URL, headers=headersInput)
-        # if the URL is identified as a ThingSpeak write, check to see if "0" is
-        # returned.  A 0 signifies a write failure.  In that case, notify
-        # the user.
-        if URL.find('api.thingspeak.com/update') != -1:
-            if int(response.text) == 0:
-                print('ThingSpeak write failed.  Check channel ID, API write key, etc.')
-                print('Also remember that for free ThingSpeak channels you can only write data once every 15 seconds.')
-                print('For details check out:  https://thingspeak.mathworks.com/pages/license_faq')
+    def api_get(self, url, headers=None):
+        """
+        Perform HTTP GET request to an API endpoint.
+        
+        Automatically detects and validates ThingSpeak write operations.
+        
+        Args:
+            url: API endpoint URL
+            headers: Optional dict of HTTP headers (e.g., {'X-Api-Key': 'key'})
+            
+        Returns:
+            Response: HTTP response object
+            
+        Examples:
+            # Simple GET request
+            response = wifi.api_get('https://api.example.com/data')
+            
+            # With API key header
+            response = wifi.api_get(
+                'https://api.example.com/data',
+                headers={'X-Api-Key': 'your_key'}
+            )
+        """
+        # Make request with or without headers
+        response = self._requests.get(url, headers=headers) if headers else self._requests.get(url)
+        
+        # Validate ThingSpeak writes
+        if self.THINGSPEAK_UPDATE_URL in url:
+            self._check_thingspeak_response(response)
+        
         return response
+
+    def _check_thingspeak_response(self, response):
+        """
+        Check ThingSpeak API response for write failures.
+        
+        Args:
+            response: HTTP response from ThingSpeak update
+        """
+        if int(response.text) == 0:
+            print("=" * 60)
+            print("ThingSpeak write FAILED")
+            print("=" * 60)
+            print("Common issues:")
+            print("  - Incorrect channel ID or API write key")
+            print(f"  - Free tier: max 1 write per {self.THINGSPEAK_MIN_INTERVAL} seconds")
+            print("  - Channel may be full or disabled")
+            print()
+            print("Details: https://thingspeak.mathworks.com/pages/license_faq")
+            print("=" * 60)
