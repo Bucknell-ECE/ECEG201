@@ -1,37 +1,21 @@
-'''
+"""
 Author: Matt Lamparter
 Based on previous work by James Howe
 Updated 2025.11.14
+Refactored by Aiden Cherniske 2025.10.15
 
-A basic class which keeps track of the current location of the stepper motor and
-allows one to either set it's poistion or move it
-
-CW for clockwise and CCW for counter clockwise
+A class for controlling a stepper motor with position tracking and homing
 
 This library is based on the Adafruit product 2927:
 https://www.adafruit.com/product/2927
-which in turn relies on the PC9685 and TB6612 devices
-We use "stepper 1" on the Adafruit board on the custom DAMNED PCB
 
-As of Fall 2024 this library is based on a NEMA 8 stepper from AliExpress with 200 steps per
-revolution or 1.8° per step
+Hardware:
+- NEMA 8 stepper: 200 steps per revolution (1.8 degrees per step)
+- Hall effect sensor at 3 o'clock position for homing
 
-The motor relies on the use of a Hall effect sensor and a magnet in a motor arm to find the home position
-Sensor is located at the 3 o'clock position when viewing the PCB from the front
+Requires an I2C bus instance to be passed during initialization
+"""
 
-A ring of 24 NeoPixels can be used to indicate sensing of Hall effect edges
-https://www.adafruit.com/product/1586
-
-As of Fall 2025 this library now requires an instantiation of the ECEGMotor class to pass an I2C object
-This will help if anyone is not able to use the default board.SCL and board.SDA pins.
-
-CircuitPython motor functions references:
-https://github.com/adafruit/Adafruit_CircuitPython_Motor/blob/main/adafruit_motor/stepper.py
-https://github.com/adafruit/Adafruit_CircuitPython_MotorKit/blob/c6118a65b68f00256bb88168de38179e6dd20721/adafruit_motorkit.py#L51
-https://github.com/adafruit/Adafruit_CircuitPython_MotorKit/blob/c6118a65b68f00256bb88168de38179e6dd20721/examples/motorkit_stepper_test.py
-
-
-'''
 import board
 import time
 from digitalio import DigitalInOut, Direction, Pull
@@ -143,12 +127,9 @@ class ECEGMotor:
 
     def check_and_update_step_count(self):
         '''
-        A simple function to make sure that step count stays between 0 and (STEPS_FOR_FULL - 1)
+        Normalize step count to valid range using modulo arithmetic
         '''
-        if self.__current_step < 0:
-            self.__current_step = self.__current_step + ECEGMotor.STEPS_FOR_FULL
-        if self.__current_step >= ECEGMotor.STEPS_FOR_FULL:
-            self.__current_step = self.__current_step - ECEGMotor.STEPS_FOR_FULL
+        self.__current_step %= ECEGMotor.STEPS_FOR_FULL
 
     def get_current_step(self):
         """
