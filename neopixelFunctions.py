@@ -230,13 +230,13 @@ def maprange( original_range, range_to_map_to, s, clamp = True):
     # clamp: whether or not a value which exceeds the end mapping range will be clamped
     # The function maps s from its original range onto a new one
     # for eg, mapping maprange([0,10],[0,100],5) would return 50
-	(a1, a2), (b1, b2) = original_range, range_to_map_to
-	return_value = b1 + ((s - a1) * (b2 - b1) / (a2 - a1))
-	if(return_value < b1):
-            return_value = b1
-        elif(return_value > b2):
-            return_value = b2
-	return  return_value
+    (a1, a2), (b1, b2) = original_range, range_to_map_to
+    return_value = b1 + ((s - a1) * (b2 - b1) / (a2 - a1))
+    if(return_value < b1):
+        return_value = b1
+    elif(return_value > b2):
+        return_value = b2
+    return  return_value
 
     
 
