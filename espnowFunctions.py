@@ -1,7 +1,7 @@
 """
 Author: Aiden Cherniske
 Written: 2025.10.15
-Style unified: 2026.01.23
+Refactored: 2026.01.23
 
 ESP-NOW communication management for ESP32-S3.
 
@@ -52,9 +52,9 @@ class ESPNowManager:
     
     def __init__(self):
         """Initialize ESP-NOW manager."""
-        self.espnow = None
-        self.peers = {}  # Dictionary to store peers with MAC as key
-        self.loop = asyncio.get_event_loop()
+        self._espnow = None
+        self._peers = {}  # Dictionary to store peers with MAC as key
+        self._loop = asyncio.get_event_loop()
     
     @staticmethod
     def mac_to_bytes(mac):
@@ -97,13 +97,13 @@ class ESPNowManager:
     def start(self):
         """Start ESP-NOW communication."""
         wifi.radio.enabled = True
-        self.espnow = espnow.ESPNow()
+        self._espnow = espnow.ESPNow()
         print("ESP-NOW started")
     
     def stop(self):
         """Stop ESP-NOW communication."""
-        if self.espnow:
-            self.espnow.deinit()
+        if self._espnow:
+            self._espnow.deinit()
             print("ESP-NOW stopped")
     
     def add_peer(self, mac):
@@ -115,14 +115,14 @@ class ESPNowManager:
         """
         mac_bytes = self.mac_to_bytes(mac)
         
-        if mac_bytes in self.peers:
+        if mac_bytes in self._peers:
             print(f"Peer {self.mac_to_str(mac_bytes)} already exists")
             return
         
         try:
             peer = espnow.Peer(mac=mac_bytes)
-            self.espnow.peers.append(peer)
-            self.peers[mac_bytes] = peer
+            self._espnow.peers.append(peer)
+            self._peers[mac_bytes] = peer
             print(f"Peer {self.mac_to_str(mac_bytes)} added")
         except Exception as e:
             print(f"Error: Failed to add peer: {e}")
@@ -136,14 +136,14 @@ class ESPNowManager:
         """
         mac_bytes = self.mac_to_bytes(mac)
         
-        if mac_bytes not in self.peers:
+        if mac_bytes not in self._peers:
             print(f"Peer {self.mac_to_str(mac_bytes)} not found")
             return
         
         try:
-            peer = self.peers[mac_bytes]
-            self.espnow.peers.remove(peer)
-            del self.peers[mac_bytes]
+            peer = self._peers[mac_bytes]
+            self._espnow.peers.remove(peer)
+            del self._peers[mac_bytes]
             print(f"Peer {self.mac_to_str(mac_bytes)} removed")
         except Exception as e:
             print(f"Error: Failed to remove peer: {e}")
@@ -152,8 +152,7 @@ class ESPNowManager:
         """
         Send a message to a peer.
         
-        Note: This is synchronous despite being defined as async in original.
-        ESP-NOW send operation is inherently blocking.
+        Note: This is synchronous. ESP-NOW send operation is inherently blocking.
         
         Args:
             mac: Peer MAC address (string or bytes)
@@ -161,13 +160,13 @@ class ESPNowManager:
         """
         mac_bytes = self.mac_to_bytes(mac)
         
-        if mac_bytes not in self.peers:
+        if mac_bytes not in self._peers:
             print(f"Error: Peer {self.mac_to_str(mac_bytes)} not found")
             return
         
         try:
-            peer = self.peers[mac_bytes]
-            self.espnow.send(message, peer)
+            peer = self._peers[mac_bytes]
+            self._espnow.send(message, peer)
             print(f"Message sent to {self.mac_to_str(mac_bytes)}: {message}")
         except Exception as e:
             print(f"Error: Failed to send message: {e}")
@@ -179,7 +178,7 @@ class ESPNowManager:
         This is an async coroutine that runs in the event loop.
         """
         while True:
-            packet = self.espnow.read()
+            packet = self._espnow.read()
             if packet:
                 mac = packet.mac
                 msg = packet.msg
