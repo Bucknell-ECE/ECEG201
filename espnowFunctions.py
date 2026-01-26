@@ -148,7 +148,7 @@ class ESPNowManager:
         except Exception as e:
             print(f"Error: Failed to remove peer: {e}")
     
-    def send_message(self, mac, message):
+    async def send_message(self, mac, message):
         """
         Send a message to a peer.
         
