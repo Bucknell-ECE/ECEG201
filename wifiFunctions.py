@@ -1,7 +1,7 @@
 """
 Author: Matt Lamparter
 Updated 2024.12.13
-Refactored by Aiden Cherniske 2026.01.23
+Refactored by Aiden Cherniske 2026.01.28
 
 WiFi connectivity and API request management for ESP32-S3 Feather.
 
@@ -28,7 +28,7 @@ import adafruit_requests
 import adafruit_ntp
 
 
-class WiFiObject:
+class WifiObject:
     """
     Manages WiFi connectivity and network operations for ESP32-S3.
     
