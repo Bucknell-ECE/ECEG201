@@ -348,6 +348,61 @@ class NeoPixelRing:
                     self._ring[i] = self.color_wheel(pixel_index & 255)
                 time.sleep(wait)
 
+    def breathing_effect(self, color, min_brightness=0.0, max_brightness=1, 
+                         steps = 50, delay=0.02, cycles=1, invert=False):
+        """
+        Create a breathing (pulsing) effect with a given color.
+
+        The effect modulates brightness from min_brightness to max_brightness.
+
+        Args:
+            color: Base color tuple (R, G, B)
+            min_brightness: Minimum brightness (0.0 to 1.0)
+            max_brightness: Maximum brightness (0.0 to 1.0)
+            steps: Number of steps in one breath cycle
+            delay: Delay between steps (seconds)
+            cycles: Number of complete breath cycles (default: 1)
+            invert: If True, reverse the breathing direction (default: False)
+        """
+        self._require_valid_color(color, "breathing_effect color")
+
+        if not (0.0 <= min_brightness < max_brightness <= 1.0):
+            raise ValueError("Brightness values must be in range 0.0 to 1.0 and min < max")
+        if steps < 2:
+            raise ValueError("steps must be at least 2")
+
+        # Store original brightness to restore later
+        original_brightness = self._ring.brightness
+
+        # Set the color once
+        self.fill(color)
+
+        # Calculate brightness step size
+        brightness_range = max_brightness - min_brightness
+        step_size = brightness_range / steps
+
+        for _ in range(cycles):
+            # Inhale
+            for step in range(steps):
+                if invert:
+                    brightness = max_brightness - step * step_size
+                else:
+                    brightness = min_brightness + step * step_size
+                self._ring.brightness = brightness
+                time.sleep(delay)
+
+            # Exhale
+            for step in range(steps):
+                if invert:
+                    brightness = min_brightness + step * step_size
+                else:
+                    brightness = max_brightness - step * step_size
+                self._ring.brightness = brightness
+                time.sleep(delay)
+
+        # Restore original brightness
+        self._ring.brightness = original_brightness
+
 # Backward compatibility: create a global instance 
 
 _global_ring = None
