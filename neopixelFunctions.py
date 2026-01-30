@@ -16,6 +16,7 @@ Hardware:
 import board
 import neopixel
 import time
+import math
 
 class NeoPixelRing:
     """
@@ -231,6 +232,35 @@ class NeoPixelRing:
         self._ring.fill(background_color)
         self._ring[dot_position] = dot_color
 
+    def rotating_gradient(self, start_color, end_color, duration=5.0, speed=0.03):
+        """
+        Animate a rotating gradient around the ring.
+        
+        Args:
+            start_color: Starting color tuple (R, G, B)
+            end_color: Ending color tuple (R, G, B)
+            duration: Total duration of animation in seconds (default: 5.0)
+            speed: Delay between frames in seconds (default: 0.03)
+        """
+        self._require_valid_color(start_color, "rotating_gradient start_color")
+        self._require_valid_color(end_color, "rotating_gradient end_color")
+        
+        frames = int(duration / speed)
+        
+        for frame in range(frames):
+            offset = frame % self._num_leds
+            for i in range(self._num_leds):
+                position = (i + offset) % self._num_leds
+                ratio = position / self._num_leds
+                
+                color = tuple(
+                    int(start_color[j] + (end_color[j] - start_color[j]) * ratio)
+                    for j in range(3)
+                )
+                self._ring[i] = color
+            
+            time.sleep(speed)
+
     def animate_snake(self, color=None, snake_length=4, start_pos=0, frames=24, delay=0.05):
         """
         Animate a snake moving around the ring.
@@ -271,11 +301,29 @@ class NeoPixelRing:
             self._ring[head_pos] = head_color
 
             # Convert previous head to body color
-            prev_head_pos = (start_pos + frame + snake_length - 1) % self
+            prev_head_pos = (start_pos + frame + snake_length - 1) % self._num_leds
             self._ring[prev_head_pos] = color
 
             if delay > 0:
                 time.sleep(delay)
+
+    def theater_chase(self, color, wait=0.1, iterations=10):
+        """
+        Theater marquee-style chasing lights animation.
+        
+        Args:
+            color: Color tuple (R, G, B)
+            wait: Delay between frames in seconds (default: 0.1)
+            iterations: Number of complete cycles (default: 10)
+        """
+        self._require_valid_color(color, "theater_chase color")
+        
+        for _ in range(iterations):
+            for offset in range(3):
+                self.clear()
+                for i in range(offset, self._num_leds, 3):
+                    self._ring[i] = color
+                time.sleep(wait)
 
     @staticmethod
     def map_range(value, from_range, to_range, clamp=True):
@@ -407,16 +455,18 @@ class NeoPixelRing:
 
 _global_ring = None
 
+def _get_global_ring():
+    """Get or create the global NeoPixel ring instance."""
+    global _global_ring
+    if _global_ring is None:
+        _global_ring = NeoPixelRing()
+    return _global_ring
+
 def get_ring():
     """Get the global NeoPixel ring object. Deprecated: Use NeoPixelRing class instead."""
     return _get_global_ring().ring
 
 # Backwards compatibility functions
-def get_ring():
-    """Get the global NeoPixel ring object. Deprecated: Use NeoPixelRing class instead."""
-    return _get_global_ring().ring
-
-
 def set_brightness(brightness):
     """Set global ring brightness. Deprecated: Use NeoPixelRing class instead."""
     _get_global_ring().brightness = brightness
@@ -425,7 +475,7 @@ def set_brightness(brightness):
 def set_pixel(color, pixel, ring=None):
     """Set a pixel color. Deprecated: Use NeoPixelRing class instead."""
     if ring is None:
-        _get_global_ring().set_pixel(pixel, color)
+        _get_global_ring().set_index(pixel, color)
     else:
         # Direct ring access for backwards compatibility
         is_valid, error = NeoPixelRing._validate_color(color)
@@ -506,7 +556,7 @@ def shaded_bar_graph(start_color, end_color, end_pos, start_pos=0, ring=None):
 def dot_on_background(fill_color, dot_pos, dot_color, ring=None):
     """Dot on background. Deprecated: Use NeoPixelRing class instead."""
     if ring is None:
-        _get_global_ring().dot_on_background(fill_color, dot_pos, dot_color)
+        _get_global_ring().dot_on_background(fill_color, dot_color, dot_pos)
     else:
         if dot_pos >= len(ring):
             print("ERROR: Your dot_pos is larger than the number of LEDS")
@@ -525,7 +575,7 @@ def animate_snake(color=(255, 0, 0), snake_length=4, start_pos=0, frames=24, rin
         head_color = (255 - color[0], 255 - color[1], 255 - color[2])
         
         for i in range(start_pos, start_pos + snake_length):
-            ring[i] = color
+            ring[i % len(ring)] = color
         
         for frame in range(frames):
             ring[(start_pos + frame) % len(ring)] = (0, 0, 0)
