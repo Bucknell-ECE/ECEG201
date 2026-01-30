@@ -86,7 +86,7 @@ class WifiManager:
     @property
     def signal_strength(self):
         """Get WiFi signal strength (RSSI) in dBm."""
-        return wifi.radio.ap_rssi if self.connected else None
+        return wifi.radio.ap_info.rssi if self.connected else None
 
     @property
     def pool(self):
@@ -110,14 +110,13 @@ class WifiManager:
             raise RuntimeError("NTP client not initialized")
         return self._ntp.datetime
 
-    def connect(self):
-        """
-        Connect to WiFi network.
-        
+    def connect(self, ssid=None, password=None):
+        """ Connect to WiFi network.
+
         Args:
             ssid: Network SSID (default: from settings.toml)
             password: Network password (default: from settings.toml)
-            
+
         Returns:
             bool: True if connection successful
         """
@@ -130,11 +129,14 @@ class WifiManager:
 
         # Get credentials
         ssid = ssid or os.getenv("CIRCUITPY_WIFI_SSID")
-        password = password or os.getenv("CIRCUITPY_WIFI_PASSWORD")
+        password = password if password is not None else os.getenv("CIRCUITPY_WIFI_PASSWORD")
 
-        if not ssid or not password:
-            raise ValueError("WiFi SSID and password must be set in settings.toml")
+        if not ssid:
+            raise ValueError("WiFi SSID must be set in settings.toml")
         
+        if password is None:
+            raise ValueError("WiFi password must be set in settings.toml (use empty string for open networks)")
+
         # Connect to WiFi
         print(f"Connecting to {ssid}...")
         try:
@@ -142,20 +144,19 @@ class WifiManager:
             self._connected = True
             print(f"Connected to {ssid}")
             print(f"IP address: {self.ip_address}")
-            
+
             # Initialize network services
             self._initialize_services()
-            
+
             # Test connectivity
             self._test_connectivity()
-            
+
             return True
-            
         except Exception as e:
             print(f"Connection failed: {e}")
             self._connected = False
             return False
-
+    
     def disconnect(self):
         """Disconnect from WiFi network."""
         if self.connected:
@@ -212,21 +213,20 @@ class WifiManager:
         else:
             print(f"Ping to {test_ip}: {ping * 1000:.2f} ms")
 
-    def get(self, url, header=None, timeout=10):
-        """
-        Perform HTTP GET request.
-        
+    def get(self, url, headers=None, timeout=10):
+        """ Perform HTTP GET request.
+
         Args:
             url: API endpoint URL
             headers: Optional dict of HTTP headers (e.g., {'X-Api-Key': 'key'})
             timeout: Request timeout in seconds (default: 10)
-            
+
         Returns:
             Response: HTTP response object
-            
+
         Raises:
             RuntimeError: If not connected to WiFi
-            
+
         Examples:
             # Simple GET request
             response = wifi.get('https://api.example.com/data')
