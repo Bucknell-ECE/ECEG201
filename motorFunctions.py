@@ -1,302 +1,323 @@
-'''
+"""
 Author: Matt Lamparter
 Based on previous work by James Howe
 Updated 2025.11.14
+Refactored by Aiden Cherniske 2026.01.28
 
-A basic class which keeps track of the current location of the stepper motor and
-allows one to either set it's poistion or move it
-
-CW for clockwise and CCW for counter clockwise
+A class for controlling a stepper motor with position tracking and homing.
 
 This library is based on the Adafruit product 2927:
 https://www.adafruit.com/product/2927
-which in turn relies on the PC9685 and TB6612 devices
-We use "stepper 1" on the Adafruit board on the custom DAMNED PCB
 
-As of Fall 2024 this library is based on a NEMA 8 stepper from AliExpress with 200 steps per
-revolution or 1.8° per step
+Hardware:
+- NEMA 8 stepper: 200 steps per revolution (1.8 degrees per step)
+- Hall effect sensor at 3 o'clock position for homing
 
-The motor relies on the use of a Hall effect sensor and a magnet in a motor arm to find the home position
-Sensor is located at the 3 o'clock position when viewing the PCB from the front
+Requires an I2C bus instance to be passed during initialization.
+"""
 
-A ring of 24 NeoPixels can be used to indicate sensing of Hall effect edges
-https://www.adafruit.com/product/1586
-
-As of Fall 2025 this library now requires an instantiation of the ECEGMotor class to pass an I2C object
-This will help if anyone is not able to use the default board.SCL and board.SDA pins.
-
-CircuitPython motor functions references:
-https://github.com/adafruit/Adafruit_CircuitPython_Motor/blob/main/adafruit_motor/stepper.py
-https://github.com/adafruit/Adafruit_CircuitPython_MotorKit/blob/c6118a65b68f00256bb88168de38179e6dd20721/adafruit_motorkit.py#L51
-https://github.com/adafruit/Adafruit_CircuitPython_MotorKit/blob/c6118a65b68f00256bb88168de38179e6dd20721/examples/motorkit_stepper_test.py
-
-
-'''
 import board
 import time
-from digitalio import DigitalInOut, Direction, Pull
+from digitalio import DigitalInOut, Direction
 from adafruit_motorkit import MotorKit
 from adafruit_motor import stepper
 
 
 class ECEGMotor:
-    '''
-    A basic class which keeps track of the current stepper motor position
-    and allows the user to move it
-    '''
-    STEPS_FOR_FULL = 200 # our specific motor has 200 steps per rotation
-    '''
+    """
+    Manages stepper motor position tracking and movement.
+    
+    The motor can be controlled in steps or degrees, with automatic
+    position wrapping and a Hall sensor-based homing routine.
+    
+    Direction convention:
+    - stepper.FORWARD = Counter-clockwise (CCW) = negative step delta
+    - stepper.BACKWARD = Clockwise (CW) = positive step delta
+    """
+    
+    # Motor specifications
+    STEPS_PER_REVOLUTION = 200  # 1.8 degrees per step
+    
+    # Homing constants
+    _HALL_CLEARANCE_STEPS = 20      # Steps to clear initial Hall sensor edge
+    _HALL_SEARCH_MAX_STEPS = 45     # Max steps to search for Hall sensor edges
+    _HALL_SEARCH_DELAY = 0.5        # Delay between steps during edge search (seconds)
+    _HALL_HYSTERESIS_OFFSET = 4     # Steps to offset for Hall sensor hysteresis
+    _MOTOR_SETTLE_DELAY = 0.5       # Time for motor to settle after homing (seconds)
 
-    '''
     def __init__(self, i2c_bus):
         """
-        The intilizer for the method
+        Initialize the motor controller.
 
+        Args:
+            i2c_bus: An initialized I2C bus instance
         """
-        #self.__debug = debug
-        self.__kit = MotorKit(i2c=i2c_bus)
-        self.__stepper = self.__kit.stepper1
-        self.__stepper.release()
-        self.__current_step = 0 #the current number of steps CW from home(step 0)
-        self.__Hall = DigitalInOut(board.D16) # Hall sensor hard wired to D16 (A2) of Feather
-        self.__Hall.direction = Direction.INPUT # set the Hall sensor pin to be an input
-        print("INITIALIZATION OF MOTOR FROM LIBRARY COMPLETE")
+        self._kit = MotorKit(i2c=i2c_bus)
+        self._stepper = self._kit.stepper1
+        self._stepper.release()
+        self._current_step = 0
 
+        # Hall sensor setup (hardwired to D16/A2 on Feather)
+        self._hall = DigitalInOut(board.D16)
+        self._hall.direction = Direction.INPUT
+
+        print("Motor initialization complete")
+
+    @property
+    def current_step(self):
+        """Current position in steps from home (0 to STEPS_PER_REVOLUTION-1)."""
+        return self._current_step
+
+    @property
+    def current_degree(self):
+        """Current position in degrees from home (0.0 to 360.0)."""
+        return (self._current_step / self.STEPS_PER_REVOLUTION) * 360.0
+
+    @property
+    def stepper(self):
+        """
+        Direct access to stepper motor object.
+        
+        Warning: Direct manipulation may desync position tracking.
+        """
+        return self._stepper
 
     def find_home(self):
         """
-        A method for finding the Hall sensor on the device
-        Spin CW infinitely until an edge is detected.  Assume the first edge is missed
-        and we only get the second edge to be safe.  This assumption is based on the fact
-        that the motor arm moves fast and the Hall sensor can be slow to respond.
-        Move CCW backwards 20 steps in order to
-        ensure we move beyond the first edge.  Now slowly move CW and check to see if an edge
-        is detected.  Save the location of edge1, find the location of edge 2, find the middle
-        and move backwards to the middle.  Then move the arm to 12 o'clock.  This is now "home".  Set the step counter to 0.
-        """
-        # create edge detectors for the range where the magnet triggers the Hall sensor
-        edge1 = 0
-        edge2 = 0
-        # step counter used only for homing the motor
-        stepCount = 0
+        Locate home position using Hall effect sensor.
 
-        #if self.__debug:
-        print("Finding the home of the stepper motor")
-        # begin by rotating CW until at least one edge of the Hall magnetic field is found
-        while True:
-            self.__stepper.onestep(direction=stepper.BACKWARD, style=stepper.DOUBLE)
-            if (self.__Hall.value == 0):
-                print("Initial edge detected!")
+        Homing sequence:
+        1. Rotate CW until Hall sensor activates
+        2. Move CCW past the sensor edge
+        3. Slowly move CW to find precise sensor boundaries
+        4. Center on the sensor active zone
+        5. Rotate CCW to 12 o'clock position (home = 0 steps)
+        
+        The Hall sensor is physically located at the 3 o'clock position.
+        Home (0 degrees) is defined as 12 o'clock position.
+        """
+        print("Finding home position...")
+
+        edge1, edge2 = self._locate_hall_sensor_edges()
+        self._move_to_home_from_hall(edge1, edge2)
+
+        self._current_step = 0
+        print("Homing complete. Motor at home position.")
+
+    def _locate_hall_sensor_edges(self):
+        """
+        Find the boundaries of the Hall sensor active zone.
+        
+        Returns:
+            tuple: (edge1, edge2) - step counts where sensor activates/deactivates
+        """
+        # Rotate CW until Hall sensor activates (value==0 means active)
+        print("Searching for Hall sensor...")
+        while self._hall.value:
+            self._stepper.onestep(direction=stepper.BACKWARD, style=stepper.DOUBLE)
+        print("Hall sensor detected!")
+
+        # Move CCW to clear past the edge
+        print("Clearing past sensor edge...")
+        self._step_n_times(self._HALL_CLEARANCE_STEPS, stepper.FORWARD)
+
+        # Slowly move CW to find both edges
+        print("Mapping sensor boundaries...")
+        return self._find_hall_edges()
+
+    def _find_hall_edges(self):
+        """
+        Slowly scan CW through Hall sensor to find entry and exit edges.
+        
+        Returns:
+            tuple: (edge1, edge2) positions in step count
+        """
+        edge1 = edge2 = None
+
+        for step_count in range(self._HALL_SEARCH_MAX_STEPS):
+            sensor_active = not self._hall.value  # Inverted logic: value==0 means active
+
+            if sensor_active and edge1 is None:
+                edge1 = step_count
+                print(f"  Edge 1 found at step {edge1}")
+            elif not sensor_active and edge1 is not None and edge2 is None:
+                edge2 = step_count - 1
+                print(f"  Edge 2 found at step {edge2}")
                 break
-        '''
-        motor has paused at the end of the Hall sensor, in theory
-        move back several steps which should eliminate the magnetic field/Hall active edge.
-        20 steps was chosen because after testing multiple times it was found that the
-        active zone was never more than about 14 steps.  20 seemed like a safe bet in case
-        the first edge was detected at the *end* of the Hall active zone
-        '''
-        for i in range(20):
-            self.__stepper.onestep(direction=stepper.FORWARD, style=stepper.DOUBLE)
 
-        # now step forward, SLOWLY (with pauses between each step to allow for Hall sensor
-        # to responsd) and locate the two edges of the active Hall zone
-        for i in range(45):
-            if self.__Hall.value:
-                if edge1 != 0 and edge2 == 0:
-                    edge2 = stepCount - 1
-                    print("Edge2 found!")
-                    break
-                self.__stepper.onestep(direction=stepper.BACKWARD, style=stepper.DOUBLE)
-                stepCount = stepCount + 1
-                time.sleep(0.5)
-            else:
-                if edge1 == 0:
-                    edge1 = stepCount
-                    print("Edge1 found!")
-                self.__stepper.onestep(direction=stepper.BACKWARD, style=stepper.DOUBLE)
-                stepCount = stepCount + 1
-                time.sleep(0.5)
-            if i == 44:
-                if edge2 == 0:
-                    print("Edge2 never found!")
-        # define a temporary home used to locate the center of the Hall sensor
-        home = edge2 - edge1
-        # move the motor arm CCW back "home" steps
-        # but remove four steps due to hysterisus
-        for i in range(home-4):
-            self.__stepper.onestep(direction=stepper.FORWARD, style=stepper.DOUBLE)
-        time.sleep(0.1) # give the motor time to settle
-        # move back to 12 o'clock position from the Hall sensor at the 3 o'clock position
-        for i in range(ECEGMotor.STEPS_FOR_FULL / 4):
-            self.__stepper.onestep(direction=stepper.FORWARD, style=stepper.DOUBLE)
-        # sleep briefly just to make sure the motor arm has settled and it doesn't move from home
-        time.sleep(0.5)
-        # release the motor (deenergize coils) to eliminate current draw and heating
-        # releasing causes the motor to move CCW a few steps so anticipate this offset and
-        # move to counter it first
-        #for i in range(3):
-        #    self.__stepper.onestep(direction=stepper.FORWARD, style=stepper.DOUBLE)
-        #self.__stepper.release()
-        #if self.__debug:
-        self.__current_step = 0 # reset the step counter to 0 once home is found
-        print("Motor positioned at home")
-
-    def check_and_update_step_count(self):
-        '''
-        A simple function to make sure that step count stays between 0 and (STEPS_FOR_FULL - 1)
-        '''
-        if self.__current_step < 0:
-            self.__current_step = self.__current_step + ECEGMotor.STEPS_FOR_FULL
-        if self.__current_step >= ECEGMotor.STEPS_FOR_FULL:
-            self.__current_step = self.__current_step - ECEGMotor.STEPS_FOR_FULL
-
-    def get_current_step(self):
-        """
-        A getter method that returns the current number of steps CW from home(step 0)
-
-        Returns: int, current number of steps CW
-        range of returned values is 0 to (STEPS_FOR_FULL - 1) in increments of 1
-        """
-        return self.__current_step
-
-    def get_stepper(self):
-        """
-        A getter method for the stepper
-
-        Returns: MotorKit.stepper1()
-        """
-        return self.__stepper
-
-    def get_current_degree(self):
-        """
-        A method which calculates and returns the position of the arm as the number of degrees from home.  Home is definied as 0 degrees.
-
-        Returns: float
-        """
-        return (float(self.__current_step) / float(ECEGMotor.STEPS_FOR_FULL)) * 360.0
-
-    def set_position_degrees(self, pos):
-        """
-        Takes in the position in degrees from home (absolute) and then moves the arm to that location
-
-        Params: The position in degrees that you want the arm to go to, could be int or float will do nothing if its not 0-360
-        """
-
-        if(pos < 0 or pos > 360):
-            print("Input not between 0 and 360, the motor will not be moved")
-            return
-
-        goal_pos_in_steps = int(((pos/360) * ECEGMotor.STEPS_FOR_FULL))
-
-        steps_to_take =  goal_pos_in_steps - self.__current_step
-
-        for i in range(abs(steps_to_take)):
-
-            #Move the arm CCW
-            if(steps_to_take < 0):
-                self.__stepper.onestep(direction = stepper.FORWARD, style = stepper.DOUBLE)
-                self.__current_step -= 1
-                #time.sleep(0.001)
-
-            #Move the arm CW
-            else:
-                self.__stepper.onestep(direction = stepper.BACKWARD, style = stepper.DOUBLE)
-                self.__current_step += 1
-                #time.sleep(0.001)
-
-    def set_position_steps(self, pos):
-        """
-        Takes in the position in steps from home (step 0) and then moves the arm to that location (absolute)
-
-        Params: The position in steps that you want the arm to go to, should be int. It will do nothing if its not between 0 and STEPS_FOR_FULL
-        """
-
-        if(pos < 0 or pos > ECEGMotor.STEPS_FOR_FULL):
-            print("Input not between 0 and", ECEGMotor.STEPS_FOR_FULL, "the motor will not be moved")
-            return
-        #convert any floats to ints
-        pos = int(pos)
-        steps_to_take =  pos - self.__current_step
-
-        for i in range(abs(steps_to_take)):
-
-            #Move the arm CCW
-            if(steps_to_take < 0):
-                self.__stepper.onestep(direction = stepper.FORWARD, style = stepper.DOUBLE)
-                self.__current_step -= 1
-                #time.sleep(0.001)
-
-            #Move the arm CW
-            else:
-                self.__stepper.onestep(direction = stepper.BACKWARD, style = stepper.DOUBLE)
-                self.__current_step += 1
-                #time.sleep(0.001)
-
-    def reset_position(self):
-        """
-        Resets the position of the arm to home moving in a CCW direction if the position is
-        between 12 o'clock and 6 o'clock on the right half face, inclusive of both bositions
-        Resets the position of the arm to home moving in a CW direction if the position is
-        between 12 o'clock and 6 o'clock on the left half face, exclusive of both bositions
-        """
-        if self.__current_step <= int(ECEGMotor.STEPS_FOR_FULL/2):
-            for i in range(self.__current_step):
-                self.__stepper.onestep(direction = stepper.FORWARD, style = stepper.DOUBLE)
-                #time.sleep(0.001)
+            self._stepper.onestep(direction=stepper.BACKWARD, style=stepper.DOUBLE)
+            time.sleep(self._HALL_SEARCH_DELAY)
         else:
-            for i in range(ECEGMotor.STEPS_FOR_FULL - self.__current_step):
-                self.__stepper.onestep(direction = stepper.BACKWARD, style = stepper.DOUBLE)
-                #time.sleep(0.001)
-        self.__current_step = 0
+            # Loop completed without break - edge2 never found
+            print("Warning: Edge 2 never found! Using last position.")
+            edge2 = self._HALL_SEARCH_MAX_STEPS - 1
 
+        return edge1 or 0, edge2
 
-    def move_arm_steps(self, amount):
+    def _move_to_home_from_hall(self, edge1, edge2):
         """
-        Moves the arm amount steps, if amount is negative then the arm is moved CCW and if its positive it moves CW
-        This is a relative movement from the current position of the arm
+        Move from current position (somewhere near Hall sensor) to home position.
+        
+        Args:
+            edge1: Step count of Hall sensor entry edge
+            edge2: Step count of Hall sensor exit edge
         """
-        amount = int(amount)
-        if (abs(amount) > ECEGMotor.STEPS_FOR_FULL):
-            print("Input beyond limits of max motor steps: ", ECEGMotor.STEPS_FOR_FULL,". The motor will not move.")
+        # Move CCW back to center of sensor zone
+        center_offset = edge2 - edge1 - self._HALL_HYSTERESIS_OFFSET
+        print(f"Centering on sensor ({center_offset} steps CCW)...")
+        self._step_n_times(center_offset, stepper.FORWARD)
+        time.sleep(0.1)
+
+        # Move CCW from 3 o'clock to 12 o'clock (quarter rotation)
+        steps_to_twelve = self.STEPS_PER_REVOLUTION // 4
+        print(f"Moving to 12 o'clock position ({steps_to_twelve} steps CCW)...")
+        self._step_n_times(steps_to_twelve, stepper.FORWARD)
+        time.sleep(self._MOTOR_SETTLE_DELAY)
+
+    def _step_n_times(self, n, direction):
+        """Execute n steps in the given direction without updating position."""
+        for _ in range(n):
+            self._stepper.onestep(direction=direction, style=stepper.DOUBLE)
+
+    def _move_motor(self, steps, direction):
+        """
+        Move motor a specific number of steps and update position counter.
+        
+        Args:
+            steps: Number of steps to move (positive integer)
+            direction: stepper.FORWARD (CCW) or stepper.BACKWARD (CW)
+        """
+        step_delta = -1 if direction == stepper.FORWARD else 1
+        
+        for _ in range(steps):
+            self._stepper.onestep(direction=direction, style=stepper.DOUBLE)
+            self._current_step += step_delta
+
+    def _steps_to_degrees(self, steps):
+        """Convert steps to degrees."""
+        return (steps / self.STEPS_PER_REVOLUTION) * 360.0
+
+    def _degrees_to_steps(self, degrees):
+        """Convert degrees to steps (rounded to nearest integer)."""
+        return round((degrees / 360.0) * self.STEPS_PER_REVOLUTION)
+
+    def _normalize_step_count(self):
+        """Wrap step count to valid range [0, STEPS_PER_REVOLUTION)."""
+        self._current_step %= self.STEPS_PER_REVOLUTION
+
+    def _validate_degrees(self, degrees, min_deg=0, max_deg=360):
+        """Validate degree input is within range."""
+        if not min_deg <= abs(degrees) <= max_deg:
+            print(f"Error: Degrees must be between {min_deg} and {max_deg}")
+            return False
+        return True
+
+    def _validate_steps(self, steps, max_steps=None):
+        """Validate step input is within range."""
+        max_steps = max_steps or self.STEPS_PER_REVOLUTION
+        if not 0 <= steps <= max_steps:
+            print(f"Error: Steps must be between 0 and {max_steps}")
+            return False
+        return True
+
+    def set_position_degrees(self, target_degrees):
+        """
+        Move to absolute position specified in degrees.
+
+        Args:
+            target_degrees: Target position in degrees (0-360)
+        """
+        if not self._validate_degrees(target_degrees):
             return
 
-        for i in range(abs(amount)):
-            # what happens if amount == 0?
-            if(amount < 0):
-                self.__stepper.onestep(direction = stepper.FORWARD,style = stepper.DOUBLE)
-                self.__current_step -= 1
-                #time.sleep(0.001)
-            else:
-                self.__stepper.onestep(direction = stepper.BACKWARD, style = stepper.DOUBLE)
-                self.__current_step += 1
-                #time.sleep(0.001)
-        self.check_and_update_step_count()
+        target_steps = self._degrees_to_steps(target_degrees)
+        self._move_to_absolute_step(target_steps)
+
+    def set_position_steps(self, target_steps):
+        """
+        Move to absolute position specified in steps.
+
+        Args:
+            target_steps: Target position in steps (0 to STEPS_PER_REVOLUTION)
+        """
+        target_steps = int(target_steps)
+        if not self._validate_steps(target_steps):
+            return
+
+        self._move_to_absolute_step(target_steps)
+
+    def _move_to_absolute_step(self, target_steps):
+        """Helper: Move to absolute step position using shortest path."""
+        steps_needed = target_steps - self._current_step
+        
+        if steps_needed == 0:
+            return
+
+        direction = stepper.FORWARD if steps_needed < 0 else stepper.BACKWARD
+        self._move_motor(abs(steps_needed), direction)
+
+    def move_arm_steps(self, steps):
+        """
+        Move motor relative to current position (in steps).
+
+        Args:
+            steps: Steps to move (negative=CCW, positive=CW)
+        """
+        steps = int(steps)
+
+        if not self._validate_steps(abs(steps)):
+            return
+
+        if steps == 0:
+            return
+
+        direction = stepper.FORWARD if steps < 0 else stepper.BACKWARD
+        self._move_motor(abs(steps), direction)
+        self._normalize_step_count()
 
     def move_arm_degrees(self, degrees):
         """
-        Moves the arm an absolute number of degrees from current position
-        degrees must be between -360 and 360
-        If degrees is negative then the arm is moved CCW and if its positive it moves CW
-        function checks to see if requested movement would take the arm out of the absolute range (0,360)
-        If requested movement would fall outside of that range then the arm stops at 0 or 360 degrees
-        current_step is updated accordingly
+        Move motor relative to current position (in degrees).
+
+        Args:
+            degrees: Degrees to move (negative=CCW, positive=CW, range: -360 to 360)
         """
-
-        if(abs(degrees) > 360):
-            print("Input not between -360 and 360, the motor will not be moved")
+        if not self._validate_degrees(degrees, min_deg=-360, max_deg=360):
             return
-        # determine the number of corresponding motor steps required to move the requested degrees
-        # steps need to be integer values
-        requested_steps = int(((degrees/360) * ECEGMotor.STEPS_FOR_FULL))
 
-        for i in range(abs(requested_steps)):
+        steps = self._degrees_to_steps(degrees)
+        self.move_arm_steps(steps)
 
-            if(requested_steps < 0):
-                self.__stepper.onestep(direction = stepper.FORWARD, style = stepper.DOUBLE)
-                self.__current_step -= 1
-                #time.sleep(0.001)
-            else:
-                self.__stepper.onestep(direction = stepper.BACKWARD, style = stepper.DOUBLE)
-                self.__current_step += 1
-                #time.sleep(0.001)
-        self.check_and_update_step_count()
+    def reset_position(self):
+        """
+        Return to home position (0 degrees) using shortest path.
+        
+        Takes CCW path if in right half (0-180°), CW path if in left half (180-360°).
+        """
+        if self._current_step == 0:
+            return
+
+        # Choose shortest path
+        if self._current_step <= self.STEPS_PER_REVOLUTION // 2:
+            # Right half: move CCW to home
+            steps, direction = self._current_step, stepper.FORWARD
+        else:
+            # Left half: move CW to home
+            steps = self.STEPS_PER_REVOLUTION - self._current_step
+            direction = stepper.BACKWARD
+
+        self._move_motor(steps, direction)
+        self._current_step = 0
+
+    # Backwards compatibility aliases for old getter methods
+    def get_current_step(self):
+        """Deprecated: Use current_step property instead."""
+        return self.current_step
+
+    def get_current_degree(self):
+        """Deprecated: Use current_degree property instead."""
+        return self.current_degree
+
+    def get_stepper(self):
+        """Deprecated: Use stepper property instead."""
+        return self.stepper
